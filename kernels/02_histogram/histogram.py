@@ -6,7 +6,7 @@ torch.set_grad_enabled(False)
 # Load the CUDA kernel as a python module
 lib = load(
     name="hist_lib",
-    sources=["histogram.cu"],
+    sources=["my_histogram.cu"],
     extra_cuda_cflags=[
         "-O3",
         "-U__CUDA_NO_HALF_OPERATORS__",
