@@ -9,7 +9,7 @@ torch.set_grad_enabled(False)
 # Load the CUDA kernel as a python module
 lib = load(
     name="swish_lib",
-    sources=["swish.cu"],
+    sources=["my_swish.cu"],
     extra_cuda_cflags=[
         "-O3",
         "-U__CUDA_NO_HALF_OPERATORS__",
