@@ -8,9 +8,15 @@
 #include <torch/types.h>
 #include <vector>
 
-// 定义阈值
-#define THRESHOLD_A 3.0
-#define THRESHOLD_B -3.0
+/*
+HardSwish(x) = x * HardSigmoid(x)
+HardSigmoid(x) = max(0, min(1, (x + 3) / 6))
+
+简化为分段函数：
+- 当 x ≥ 3 时，输出 x
+- 当 x ≤ -3 时，输出 0
+- 当 -3 < x < 3 时，输出 x * (x + 3) / 6
+*/
 
 #define WARP_SIZE 32
 #define INT4(value) (reinterpret_cast<int4 *>(&(value))[0])
@@ -19,65 +25,71 @@
 #define BFLOAT2(value) (reinterpret_cast<__nv_bfloat162 *>(&(value))[0])
 #define LDST128BITS(value) (reinterpret_cast<float4 *>(&(value))[0])
 
+#define THRESHOLD_A 3.0
+#define THRESHOLD_B -3.0
+
 // FP32
-__device__ __forceinline__ float hardswish(float x) {
-  if (x >= THRESHOLD_A) {
-    return x;
-  } else if (x <= THRESHOLD_B) {
-    return 0;
-  } else {
-    return x * (x + 3) / 6;
-  }
+__device__ __forceinline__ float hardswish(float x){
+    if(x >= THRESHOLD_A){
+        return x;
+    }
+    else if (x <= THRESHOLD_B){
+        return 0;
+    }
+    else{
+        return x * (x + 3) / 6;
+    }
+}
+
+__global__ void hardswish_f32_kernel(float *x, float *y, int N){
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if(idx < N){
+        y[idx] = hardswish(x[idx]);
+    }
+}
+
+__global__ void hardswish_f32x4_kernel(float *x, float *y, int N){
+    int idx = 4 * (blockDim.x * blockIdx.x + threadIdx.x);
+    if(idx + 3 < N){
+        float4 reg_x = FLOAT4(x[idx]), reg_y;
+        reg_y.x = hardswish(reg_x.x);
+        reg_y.y = hardswish(reg_x.y);
+        reg_y.z = hardswish(reg_x.z);
+        reg_y.w = hardswish(reg_x.w);
+        FLOAT4(y[idx]) = reg_y;
+    }
 }
 
 // FP16
-__device__ __forceinline__ half hardswish_half(half x) {
-  if (x > __float2half(THRESHOLD_A)) {
-    return x;
-  } else if (x < __float2half(THRESHOLD_B)) {
-    return __float2half(0.f);
-  } else {
-    return x * (x + __float2half(3.f)) / __float2half(6.f);
-  }
+__device__ __forceinline__ half hardswish_half(half x){
+    if(x >= __float2half(THRESHOLD_A)){
+        return x;
+    }
+    else if (x <= __float2half(THRESHOLD_B)){
+        return __float2half(0.f);
+    }
+    else{
+        return x * (x + __float2half(3.f)) / __float2half(6.f);
+    }
 }
 
-// FP32
-__global__ void hardswish_f32_kernel(float *x, float *y, int N) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < N)
-    y[idx] = hardswish(x[idx]);
+__global__ void hardswish_f16_kernel(half *x, half *y, int N){
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if(idx < N){
+        y[idx] = hardswish_half(x[idx]);
+    }
 }
 
-__global__ void hardswish_f32x4_kernel(float *x, float *y, int N) {
-  int idx = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
-  if (idx < N) {
-    float4 reg_x = FLOAT4(x[idx]);
-    float4 reg_y;
-    reg_y.x = hardswish(reg_x.x);
-    reg_y.y = hardswish(reg_x.y);
-    reg_y.z = hardswish(reg_x.z);
-    reg_y.w = hardswish(reg_x.w);
-    FLOAT4(y[idx]) = reg_y;
-  }
+__global__ void hardswish_f16x2_kernel(half *x, half *y, int N){
+    int idx = 2 * (blockDim.x * blockIdx.x + threadIdx.x);
+    if(idx + 1 < N){
+        half2 reg_x = HALF2(x[idx]), reg_y;
+        reg_y.x = hardswish_half(reg_x.x);
+        reg_y.y = hardswish_half(reg_x.y);
+        HALF2(y[idx]) = reg_y;
+    }
 }
 
-// FP16
-__global__ void hardswish_f16_kernel(half *x, half *y, int N) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < N)
-    y[idx] = hardswish_half(x[idx]);
-}
-
-__global__ void hardswish_f16x2_kernel(half *x, half *y, int N) {
-  int idx = 2 * (blockIdx.x * blockDim.x + threadIdx.x);
-  if (idx < N) {
-    half2 reg_x = HALF2(x[idx]);
-    half2 reg_y;
-    reg_y.x = hardswish_half(reg_x.x);
-    reg_y.y = hardswish_half(reg_x.y);
-    HALF2(y[idx]) = reg_y;
-  }
-}
 
 __global__ void hardswish_f16x8_kernel(half *x, half *y, int N) {
   int idx = 8 * (blockIdx.x * blockDim.x + threadIdx.x);

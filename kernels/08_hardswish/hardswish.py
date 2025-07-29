@@ -10,7 +10,7 @@ torch.set_grad_enabled(False)
 # Load the CUDA kernel as a Python module
 lib = load(
     name="hardswish_lib",
-    sources=["hardswish.cu"],
+    sources=["my_hardswish.cu"],
     extra_cuda_cflags=[
         "-O3",
         "-U__CUDA_NO_HALF_OPERATORS__",
