@@ -15,54 +15,56 @@
 #define BFLOAT2(value) (reinterpret_cast<__nv_bfloat162 *>(&(value))[0])
 #define LDST128BITS(value) (reinterpret_cast<float4 *>(&(value))[0])
 
-// 定义全局 LAMBD 值
-#define LAMBD 0.5f
+/*
+f(x) = x, if |x| > λ
+f(x) = 0, otherwise
+*/
+#define LAMBDA 0.5f
 
-// HARDSHRINK 计算函数
 // FP32
-__device__ __forceinline__ float hardshrink(float x) {
-  if (x > LAMBD || x < -LAMBD) {
-    return x;
-  } else {
-    return 0;
-  }
+__device__ __forceinline__ float hardshrink(float x){
+    if(x > LAMBDA || x < -LAMBDA){
+        return x;
+    }
+    else{
+        return 0;
+    }
+}
+
+__global__ void hardshrink_f32_kernel(float *x, float *y, int N){
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if(idx < N){
+        y[idx] = hardshrink(x[idx]);
+    }
+}
+
+__global__ void hardshrink_f32x4_kernel(float *x, float *y, int N){
+    int idx = 4 * (blockDim.x * blockIdx.x + threadIdx.x);
+    if(idx + 3 < N){
+        float4 reg_x = FLOAT4(x[idx]), reg_y;
+        reg_y.x = hardshrink(reg_x.x);
+        reg_y.y = hardshrink(reg_x.y);
+        reg_y.z = hardshrink(reg_x.z);
+        reg_y.w = hardshrink(reg_x.w);
+        FLOAT4(y[idx]) = reg_y;
+    }
 }
 
 // FP16
-__device__ __forceinline__ half hardshrink_half(half x) {
-  if (x > __float2half(LAMBD) || x < __float2half(-LAMBD)) {
-    return x;
-  } else {
-    return __float2half(0.f);
-  }
+__device__ __forceinline__ half hardshrink_half(half x){
+    if(x > __float2half(LAMBDA) || x < __float2half(LAMBDA)){
+        return x;
+    }
+    else{
+        return __float2half(0.f);
+    }
 }
 
-// CUDA 核函数
-// FP32
-__global__ void hardshrink_f32_kernel(float *x, float *y, int N) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < N)
-    y[idx] = hardshrink(x[idx]);
-}
-
-__global__ void hardshrink_f32x4_kernel(float *x, float *y, int N) {
-  int idx = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
-  if (idx < N) {
-    float4 reg_x = FLOAT4(x[idx]);
-    float4 reg_y;
-    reg_y.x = hardshrink(reg_x.x);
-    reg_y.y = hardshrink(reg_x.y);
-    reg_y.z = hardshrink(reg_x.z);
-    reg_y.w = hardshrink(reg_x.w);
-    FLOAT4(y[idx]) = reg_y;
-  }
-}
-
-// FP16
-__global__ void hardshrink_f16_kernel(half *x, half *y, int N) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < N)
-    y[idx] = hardshrink_half(x[idx]);
+__global__ void hardshrink_f16_kernel(half *x, half *y, int N){
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if(idx < N){
+        y[idx] = hardshrink_half(x[idx]);
+    }
 }
 
 __global__ void hardshrink_f16x2_kernel(half *x, half *y, int N) {
@@ -105,18 +107,18 @@ __global__ void hardshrink_f16x8_kernel(half *x, half *y, int N) {
   }
 }
 
-__global__ void hardshrink_f16x8_pack_kernel(half *x, half *y, int N) {
-  int idx = 8 * (blockIdx.x * blockDim.x + threadIdx.x);
-  half pack_x[8], pack_y[8];
-  LDST128BITS(pack_x[0]) = LDST128BITS(x[idx]);
+__global__ void hardshrink_f16x8_pack_kernel(half *x, half *y, int N){
+    int idx = 8 * (blockDim.x * blockIdx.x + threadIdx.x);
+    if(idx + 7 < N){
+        half pack_x[8], pack_y[8];
+        LDST128BITS(pack_x[0]) = LDST128BITS(x[idx]);
 
-#pragma unroll
-  for (int i = 0; i < 8; i++) {
-    pack_y[i] = hardshrink_half(pack_x[i]);
-  }
-  if ((idx + 7) < N) {
-    LDST128BITS(y[idx]) = LDST128BITS(pack_y[0]);
-  }
+        #pragma unroll
+        for(int i = 0; i < 8; i++){
+            pack_y[i] = hardshrink_half(pack_x[i]);
+        }
+        LDST128BITS(y[idx]) = LDST128BITS(pack_y[0]);
+    }
 }
 
 // 定义 CHECK_TORCH_TENSOR_DTYPE 宏
