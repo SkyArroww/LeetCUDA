@@ -77,7 +77,6 @@ def run_benchmark(
     return out, mean_time
 
 
-@torch.compile(mode="max-autotune-no-cudagraphs")
 def transpose_copy_compiled(input: torch.Tensor, out: torch.Tensor):
     return torch.transpose_copy(input, dim0=0, dim1=1, out=out)
 
