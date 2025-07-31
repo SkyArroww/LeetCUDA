@@ -23,165 +23,154 @@
 #define MAX_EXP_F16 __float2half(11.089866488461016f)
 #define MIN_EXP_F16 __float2half(-9.704060527839234f)
 
-// FP32
+// FP32 1D
 // col2row means read x[row][col] and write y[col][row]
 // row2col means read x[col][row] and write y[row][col]
-__global__ void mat_transpose_f32_col2row_kernel(float *x, float *y,
-                                                 const int row, const int col) {
-  const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int global_row = global_idx / col;
-  const int global_col = global_idx % col;
-  if (global_idx < row * col) {
-    y[global_col * row + global_row] = x[global_idx];
-  }
+__global__ void mat_transpose_f32_col2row_kernel(float *x, float *y, const int row, const int col){
+    int global_idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if(global_idx < row * col){
+        int global_row = global_idx / col;
+        int global_col = global_idx % col;
+        y[global_col * row + global_row] = x[global_idx];
+    }
 }
 
-__global__ void mat_transpose_f32_row2col_kernel(float *x, float *y,
-                                                 const int row, const int col) {
-  const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int global_col = global_idx / row;
-  const int global_row = global_idx % row;
-  if (global_idx < row * col) {
-    y[global_idx] = x[global_row * col + global_col];
-  }
+// M_row_idx = M_T_col_idx = idx % row
+// M_col_odx = M_T_row_idx = idx / row 
+__global__ void mat_transpose_f32_row2col_kernel(float *x, float *y, const int row, const int col){
+    int global_idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if(global_idx < row * col){
+        int global_row = global_idx % row;
+        int global_col = global_idx / row;
+        y[global_idx] = x[global_col * row + global_row];
+    }
 }
 
-__global__ void mat_transpose_f32x4_col2row_kernel(float *x, float *y,
-                                                   const int row,
-                                                   const int col) {
-  int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  int global_col = (global_idx * 4) % col;
-  int global_row = (global_idx * 4) / col;
+__global__ void mat_transpose_f32x4_col2row_kernel(float *x, float *y, const int row, const int col){
+    int global_idx = 4 * (blockDim.x * blockIdx.x + threadIdx.x);
+    int global_row = global_idx / col;
+    int global_col = global_idx % col;
+    if(global_row < row && global_col + 3 < col){
+        float4 reg_x = FLOAT4(x[global_idx]);
 
-  if (global_row < row && global_col + 3 < col) {
-    float4 x_val = reinterpret_cast<float4 *>(x)[global_idx];
-
-    y[global_col * row + global_row] = x_val.x;
-    y[(global_col + 1) * row + global_row] = x_val.y;
-    y[(global_col + 2) * row + global_row] = x_val.z;
-    y[(global_col + 3) * row + global_row] = x_val.w;
-  }
-}
-__global__ void mat_transpose_f32x4_row2col_kernel(float *x, float *y,
-                                                   const int row,
-                                                   const int col) {
-  const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int global_col = (global_idx * 4) / row;
-  const int global_row = (global_idx * 4) % row;
-
-  if (global_row < row && global_col < col) {
-    float4 x_val;
-    x_val.x = x[global_row * col + global_col];
-    x_val.y = x[(global_row + 1) * col + global_col];
-    x_val.z = x[(global_row + 2) * col + global_col];
-    x_val.w = x[(global_row + 3) * col + global_col];
-    reinterpret_cast<float4 *>(y)[global_idx] = FLOAT4(x_val);
-  }
+        y[(global_col + 0) * row + global_row] = reg_x.x;
+        y[(global_col + 1) * row + global_row] = reg_x.y;
+        y[(global_col + 2) * row + global_row] = reg_x.z;
+        y[(global_col + 3) * row + global_row] = reg_x.w;
+    }
 }
 
-// work for row == col
-__global__ void mat_transpose_f32_diagonal2d_kernel(float *x, float *y, int row,
-                                                    int col) {
-  const int block_y = blockIdx.x;
+__global__ void mat_transpose_f32x4_row2col_kernel(float *x, float *y, const int row, const int col){
+    int global_idx = 4 * (blockDim.x * blockIdx.x + threadIdx.x);
+    int global_row = global_idx % row;
+    int global_col = global_idx / row;
+    if(global_col < col && global_row + 3 < row){
+        float4 reg_y;
+
+        reg_y.x = x[(global_row + 0) * col + global_col];
+        reg_y.y = x[(global_row + 1) * col + global_col];
+        reg_y.z = x[(global_row + 2) * col + global_col];
+        reg_y.w = x[(global_row + 3) * col + global_col];
+        FLOAT4(y[global_idx]) = reg_y;
+    }
+}
+
+// FP32 2D
+__global__ void mat_transpose_f32_col2row2d_kernel(float *x, float *y, const int row, const int col){
+    const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (global_x < col && global_y < row){
+        y[global_x * row + global_y] = x[global_y * col + global_x];
+    }
+}
+
+__global__ void mat_transpose_f32_row2col2d_kernel(float *x, float *y, const int row, const int col){
+    const int global_y = blockIdx.x * blockDim.x + threadIdx.x;
+    const int global_x = blockIdx.y * blockDim.y + threadIdx.y;
+    if (global_y < col && global_x < row) {
+        y[global_y * row + global_x] = x[global_x * col + global_y];
+    }
+}
+
+__global__ void mat_transpose_f32x4_col2row2d_kernel(float *x, float *y, const int row, const int col){
+    const int global_x = 4 * (blockIdx.x * blockDim.x + threadIdx.x);
+    const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
+    if(global_x + 3 < col && global_y < row){
+        // 每个thread处理 x[global_y][global_x : (global_x + 4)]
+        // (global_y * col + global_x*4) / 4 = global_y * col / 4 + global_x
+        float4 reg_x = FLOAT4(x[global_y * col + global_x]);
+        y[(global_x + 0) * row + global_y] = reg_x.x;
+        y[(global_x + 1) * row + global_y] = reg_x.y;
+        y[(global_x + 2) * row + global_y] = reg_x.z;
+        y[(global_x + 3) * row + global_y] = reg_x.w;
+    }
+}
+
+__global__ void mat_transpose_f32x4_row2col2d_kernel(float *x, float *y, const int row, const int col){
+    const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int global_y = 4 * (blockIdx.y * blockDim.y + threadIdx.y);
+    if(global_y + 3 < row && global_x < col){
+        float4 reg_y;
+        reg_y.x = x[(global_y + 0) * col + global_x];
+        reg_y.y = x[(global_y + 1) * col + global_x];
+        reg_y.z = x[(global_y + 2) * col + global_x];
+        reg_y.w = x[(global_y + 3) * col + global_x];
+        FLOAT4(y[global_x * row + global_y]) = reg_y;
+    }
+}
+
+// rol == col
+__global__ void mat_transpose_f32_diagonal2d_kernel(float *x, float *y, int row, int col){
+    const int block_y = blockIdx.x;
   const int block_x = (blockIdx.x + blockIdx.y) % gridDim.x;
-  const int global_col = threadIdx.x + blockDim.x * block_x;
-  const int global_row = threadIdx.y + blockDim.y * block_y;
-  if (global_col < col && global_row < row) {
-    y[global_row * col + global_col] = x[global_col * row + global_row]; // ?
-  }
-}
-
-__global__ void mat_transpose_f32_col2row2d_kernel(float *x, float *y,
-                                                   const int row,
-                                                   const int col) {
-  const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
-  if (global_x < col && global_y < row) {
+  const int global_x = threadIdx.x + blockDim.x * block_x;
+  const int global_y = threadIdx.y + blockDim.y * block_y;
+  if(global_x < col && global_y < row){
     y[global_x * row + global_y] = x[global_y * col + global_x];
   }
 }
 
-__global__ void mat_transpose_f32_row2col2d_kernel(float *x, float *y,
-                                                   const int row,
-                                                   const int col) {
-  const int global_y = blockIdx.x * blockDim.x + threadIdx.x;
-  const int global_x = blockIdx.y * blockDim.y + threadIdx.y;
-  if (global_y < col && global_x < row) {
-    y[global_y * row + global_x] = x[global_x * col + global_y];
-  }
+// shared
+__global__ void mat_transpose_f32x4_shared_col2row2d_kernel(float *x, float *y, const int row, const int col){
+    int global_x = blockDim.x * blockIdx.x + threadIdx.x;
+    int global_y = blockDim.y * blockIdx.y + threadIdx.y;
+    int local_x = threadIdx.x;
+    int local_y = threadIdx.y;
+    __shared__ float tile[WARP_SIZE_S][WARP_SIZE_S * 4];
+    if(global_x * 4 + 3 < col && global_y < row){
+        float4 reg_x = FLOAT4(x[global_y * col + 4 * global_x]);
+        FLOAT4(tile[local_y][local_x * 4]) = reg_x;
+        __syncthreads();
+        float4 smem_val;
+
+        constexpr int STRIDE = WARP_SIZE_S / 4;
+        smem_val.x = tile[(local_y % STRIDE) * 4 + 0][local_x * 4 + local_y / STRIDE];
+        smem_val.y = tile[(local_y % STRIDE) * 4 + 1][local_x * 4 + local_y / STRIDE];
+        smem_val.z = tile[(local_y % STRIDE) * 4 + 2][local_x * 4 + local_y / STRIDE];
+        smem_val.w = tile[(local_y % STRIDE) * 4 + 3][local_x * 4 + local_y / STRIDE];
+        /*
+        local_x   locay_y   read_data     output
+        0         0         [0 - 3][0]
+        1         0         [0 - 3][4]
+        0         1         [4 - 7][0]
+        ...
+        0         4         [0 - 3][1]
+        */
+        const int bid_y = blockIdx.y * blockDim.y;
+        const int out_y = global_x * 4 + local_y / STRIDE;
+        const int out_x = (local_y % STRIDE) * 4 + bid_y;
+        FLOAT4(y[out_y * row + out_x]) = smem_val;
+    }
 }
 
-__global__ void mat_transpose_f32x4_col2row2d_kernel(float *x, float *y,
-                                                     const int row,
-                                                     const int col) {
-  const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
-  if (global_x * 4 + 3 < col && global_y < row) {
-    float4 x_val = reinterpret_cast<float4 *>(x)[global_y * col / 4 + global_x];
-    y[(global_x * 4) * row + global_y] = x_val.x;
-    y[(global_x * 4 + 1) * row + global_y] = x_val.y;
-    y[(global_x * 4 + 2) * row + global_y] = x_val.z;
-    y[(global_x * 4 + 3) * row + global_y] = x_val.w;
-  }
-}
-__global__ void mat_transpose_f32x4_row2col2d_kernel(float *x, float *y,
-                                                     const int row,
-                                                     const int col) {
-  const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
-  if (global_y * 4 + 3 < row && global_x < col) {
-    float4 x_val;
-    x_val.x = x[(global_y * 4) * col + global_x];
-    x_val.y = x[(global_y * 4 + 1) * col + global_x];
-    x_val.z = x[(global_y * 4 + 2) * col + global_x];
-    x_val.w = x[(global_y * 4 + 3) * col + global_x];
-    reinterpret_cast<float4 *>(y)[global_x * row / 4 + global_y] =
-        FLOAT4(x_val);
-  }
-}
 
-__global__ void mat_transpose_f32x4_shared_col2row2d_kernel(float *x, float *y,
-                                                            const int row,
-                                                            const int col) {
-  const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
-  const int local_x = threadIdx.x;
-  const int local_y = threadIdx.y;
-  __shared__ float tile[WARP_SIZE_S][WARP_SIZE_S * 4];
-  if (global_x * 4 + 3 < col + 3 && global_y < row) {
-    // load value from x to shared memory
-    float4 x_val = reinterpret_cast<float4 *>(x)[global_y * col / 4 + global_x];
-    FLOAT4(tile[local_y][local_x * 4]) = FLOAT4(x_val);
-    __syncthreads();
-    float4 smem_val;
-    // load value from shared memory to y.
-    // add STRIDE to satisfied different block size.
-    constexpr int STRIDE = WARP_SIZE_S / 4;
-    smem_val.x = tile[(local_y % STRIDE) * 4][local_x * 4 + local_y / STRIDE];
-    smem_val.y =
-        tile[(local_y % STRIDE) * 4 + 1][local_x * 4 + local_y / STRIDE];
-    smem_val.z =
-        tile[(local_y % STRIDE) * 4 + 2][local_x * 4 + local_y / STRIDE];
-    smem_val.w =
-        tile[(local_y % STRIDE) * 4 + 3][local_x * 4 + local_y / STRIDE];
-    // map index n*n to (n/4)*(n*4)
-    const int bid_y = blockIdx.y * blockDim.y;
-    const int out_y = global_x * 4 + local_y / STRIDE;
-    const int out_x = (local_y % STRIDE) * 4 + bid_y;
-    reinterpret_cast<float4 *>(y)[(out_y * row + out_x) / 4] = FLOAT4(smem_val);
-  }
-}
-
-__global__ void mat_transpose_f32x4_shared_row2col2d_kernel(float *x, float *y,
-                                                            const int row,
-                                                            const int col) {
+__global__ void mat_transpose_f32x4_shared_row2col2d_kernel(float *x, float *y, const int row, const int col) {
   const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
   const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
   const int local_x = threadIdx.x;
   const int local_y = threadIdx.y;
   __shared__ float tile[WARP_SIZE_S * 4][WARP_SIZE_S];
-  if (global_y * 4 < row && global_x < col) {
-    // load value from x to shared memory
+  if (global_y * 4 < row && global_x < col){
     float4 x_val;
     x_val.x = x[(global_y * 4) * col + global_x];
     x_val.y = x[(global_y * 4 + 1) * col + global_x];
@@ -193,76 +182,67 @@ __global__ void mat_transpose_f32x4_shared_row2col2d_kernel(float *x, float *y,
     tile[local_y * 4 + 3][local_x] = x_val.w;
     __syncthreads();
     float4 smem_val;
-    // load value from shared memory to y.
-    // add STRIDE to satisfied different block size.
-    // map index n*n to (n/4)*(n*4)
     constexpr int STRIDE = WARP_SIZE_S / 4;
-    smem_val.x = tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4];
-    smem_val.y =
-        tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 1];
-    smem_val.z =
-        tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 2];
-    smem_val.w =
-        tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 3];
+    smem_val.x = tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 0];
+    smem_val.y = tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 1];
+    smem_val.z = tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 2];
+    smem_val.w = tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 3];
+    
     const int bid_x = blockIdx.x * blockDim.x;
     const int bid_y = blockIdx.y * blockDim.y;
-
     const int out_y = bid_x + (local_y % STRIDE) * 4;
     const int out_x = bid_y * 4 + local_x * 4 + (local_y / STRIDE);
-    y[out_y * row + out_x] = smem_val.x;
+    y[(out_y + 0) * row + out_x] = smem_val.x;
     y[(out_y + 1) * row + out_x] = smem_val.y;
     y[(out_y + 2) * row + out_x] = smem_val.z;
     y[(out_y + 3) * row + out_x] = smem_val.w;
   }
 }
 
-__global__ void mat_transpose_f32x4_shared_bcf_col2row2d_kernel(float *x,
-                                                                float *y,
-                                                                const int row,
-                                                                const int col) {
-  const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
-  const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
-  const int local_x = threadIdx.x;
-  const int local_y = threadIdx.y;
-  __shared__ float tile[WARP_SIZE_S][WARP_SIZE_S * 4 + PAD];
-  if (global_x * 4 + 3 < col + 3 && global_y < row) {
-    // load value from x to shared memory
-    float4 x_val = reinterpret_cast<float4 *>(x)[global_y * col / 4 + global_x];
-    tile[local_y][local_x * 4] = x_val.x;
-    tile[local_y][local_x * 4 + 1] = x_val.y;
-    tile[local_y][local_x * 4 + 2] = x_val.z;
-    tile[local_y][local_x * 4 + 3] = x_val.w;
-    __syncthreads();
-    float4 smem_val;
-    // load value from shared memory to y.
-    // add STRIDE to satisfied different block size.
-    constexpr int STRIDE = WARP_SIZE_S / 4;
-    smem_val.x = tile[(local_y % STRIDE) * 4][local_x * 4 + local_y / STRIDE];
-    smem_val.y =
-        tile[(local_y % STRIDE) * 4 + 1][local_x * 4 + local_y / STRIDE];
-    smem_val.z =
-        tile[(local_y % STRIDE) * 4 + 2][local_x * 4 + local_y / STRIDE];
-    smem_val.w =
-        tile[(local_y % STRIDE) * 4 + 3][local_x * 4 + local_y / STRIDE];
-    // map index n*n to (n/4)*(n*4)
-    const int bid_y = blockIdx.y * blockDim.y;
-    const int out_y = global_x * 4 + local_y / STRIDE;
-    const int out_x = (local_y % STRIDE) * 4 + bid_y;
-    reinterpret_cast<float4 *>(y)[(out_y * row + out_x) / 4] = FLOAT4(smem_val);
-  }
+__global__ void mat_transpose_f32x4_shared_bcf_col2row2d_kernel(float *x, float *y, const int row, const int col){
+    int global_x = blockDim.x * blockIdx.x + threadIdx.x;
+    int global_y = blockDim.y * blockIdx.y + threadIdx.y;
+    int local_x = threadIdx.x;
+    int local_y = threadIdx.y;
+    __shared__ float tile[WARP_SIZE_S][WARP_SIZE_S * 4 + PAD];
+    if(global_x * 4 + 3 < col && global_y < row){
+        float4 reg_x = FLOAT4(x[global_y * col + 4 * global_x]);
+        // FLOAT4(tile[local_y][local_x * 4]) = reg_x;
+        tile[local_y][local_x * 4] = reg_x.x;
+        tile[local_y][local_x * 4 + 1] = reg_x.y;
+        tile[local_y][local_x * 4 + 2] = reg_x.z;
+        tile[local_y][local_x * 4 + 3] = reg_x.w;
+        __syncthreads();
+        float4 smem_val;
+
+        constexpr int STRIDE = WARP_SIZE_S / 4;
+        smem_val.x = tile[(local_y % STRIDE) * 4 + 0][local_x * 4 + local_y / STRIDE];
+        smem_val.y = tile[(local_y % STRIDE) * 4 + 1][local_x * 4 + local_y / STRIDE];
+        smem_val.z = tile[(local_y % STRIDE) * 4 + 2][local_x * 4 + local_y / STRIDE];
+        smem_val.w = tile[(local_y % STRIDE) * 4 + 3][local_x * 4 + local_y / STRIDE];
+        /*
+        local_x   locay_y   read_data     output
+        0         0         [0 - 3][0]
+        1         0         [0 - 3][4]
+        0         1         [4 - 7][0]
+        ...
+        0         4         [0 - 3][1]
+        */
+        const int bid_y = blockIdx.y * blockDim.y;
+        const int out_y = global_x * 4 + local_y / STRIDE;
+        const int out_x = (local_y % STRIDE) * 4 + bid_y;
+        FLOAT4(y[out_y * row + out_x]) = smem_val;
+    }
 }
 
-__global__ void mat_transpose_f32x4_shared_bcf_row2col2d_kernel(float *x,
-                                                                float *y,
-                                                                const int row,
-                                                                const int col) {
+
+__global__ void mat_transpose_f32x4_shared_bcf_row2col2d_kernel(float *x, float *y, const int row, const int col) {
   const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
   const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
   const int local_x = threadIdx.x;
   const int local_y = threadIdx.y;
   __shared__ float tile[WARP_SIZE_S * 4][WARP_SIZE_S + PAD];
-  if (global_y * 4 < row && global_x < col) {
-    // load value from x to shared memory
+  if (global_y * 4 < row && global_x < col){
     float4 x_val;
     x_val.x = x[(global_y * 4) * col + global_x];
     x_val.y = x[(global_y * 4 + 1) * col + global_x];
@@ -274,38 +254,30 @@ __global__ void mat_transpose_f32x4_shared_bcf_row2col2d_kernel(float *x,
     tile[local_y * 4 + 3][local_x] = x_val.w;
     __syncthreads();
     float4 smem_val;
-    // load value from shared memory to y.
-    // add STRIDE to satisfied different block size.
-    // map index n*n to (n/4)*(n*4)
     constexpr int STRIDE = WARP_SIZE_S / 4;
-    smem_val.x = tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4];
-    smem_val.y =
-        tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 1];
-    smem_val.z =
-        tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 2];
-    smem_val.w =
-        tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 3];
+    smem_val.x = tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 0];
+    smem_val.y = tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 1];
+    smem_val.z = tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 2];
+    smem_val.w = tile[local_x * 4 + local_y / STRIDE][(local_y % STRIDE) * 4 + 3];
+    
     const int bid_x = blockIdx.x * blockDim.x;
     const int bid_y = blockIdx.y * blockDim.y;
-
     const int out_y = bid_x + (local_y % STRIDE) * 4;
     const int out_x = bid_y * 4 + local_x * 4 + (local_y / STRIDE);
-    y[out_y * row + out_x] = smem_val.x;
+    y[(out_y + 0) * row + out_x] = smem_val.x;
     y[(out_y + 1) * row + out_x] = smem_val.y;
     y[(out_y + 2) * row + out_x] = smem_val.z;
     y[(out_y + 3) * row + out_x] = smem_val.w;
   }
 }
 
-__global__ void mat_transpose_f32x4_shared_bcf_merge_write_row2col2d_kernel(
-    float *x, float *y, const int row, const int col) {
+__global__ void mat_transpose_f32x4_shared_bcf_merge_write_row2col2d_kernel(float *x, float *y, const int row, const int col) {
   const int global_x = blockIdx.x * blockDim.x + threadIdx.x;
   const int global_y = blockIdx.y * blockDim.y + threadIdx.y;
   const int local_x = threadIdx.x;
   const int local_y = threadIdx.y;
   __shared__ float tile[WARP_SIZE_S * 4][WARP_SIZE_S + PAD];
-  if (global_y * 4 < row && global_x < col) {
-    // load value from x to shared memory
+  if (global_y * 4 < row && global_x < col){
     float4 x_val;
     x_val.x = x[(global_y * 4) * col + global_x];
     x_val.y = x[(global_y * 4 + 1) * col + global_x];
@@ -317,7 +289,7 @@ __global__ void mat_transpose_f32x4_shared_bcf_merge_write_row2col2d_kernel(
     tile[local_y * 4 + 3][local_x] = x_val.w;
     __syncthreads();
     float4 smem_val;
-    // load value from shared memory to y.
+    
     smem_val.x = tile[local_x * 4][local_y];
     smem_val.y = tile[local_x * 4 + 1][local_y];
     smem_val.z = tile[local_x * 4 + 2][local_y];
@@ -330,6 +302,7 @@ __global__ void mat_transpose_f32x4_shared_bcf_merge_write_row2col2d_kernel(
     reinterpret_cast<float4 *>(y)[(out_x * row + out_y) / 4] = FLOAT4(smem_val);
   }
 }
+
 
 #define STRINGFY(str) #str
 #define TORCH_BINDING_COMMON_EXTENSION(func)                                   \

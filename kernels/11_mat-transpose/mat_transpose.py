@@ -17,7 +17,7 @@ CUTLASS_REPO_PATH = os.environ.get(
 # Load the CUDA kernel as a python module
 lib = load(
     name="mat_transpose_lib",
-    sources=["mat_transpose.cu", "mat_transpose_cute.cu"],
+    sources=["my_mat_transpose.cu", "mat_transpose_cute.cu"],
     extra_cuda_cflags=[
         "-O3",
         "-U__CUDA_NO_HALF_OPERATORS__",
