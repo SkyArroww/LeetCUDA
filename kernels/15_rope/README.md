@@ -1,15 +1,115 @@
-# Sigmoid
+# RoPE (Rotary Position Embedding)
 
 ## 0x00 说明
 
-RoPE基础版本，包含了RoPE在Llama的最小实现。
+RoPE 基础版本，包含了 RoPE 在 Llama 的最小实现。RoPE 是一种通过旋转变换来编码位置信息的位置编码方法，它将相邻的两个特征维度组成复数，然后通过复数乘法实现旋转。
 
 包含以下内容：
 
-- [X] rope_f32_kernel
-- [X] rope_f32x4_kernel(float4向量化版本)
+- [X] rope_f32_kernel (基础版本)
+- [X] rope_f32_v2_kernel (优化索引版本) 
+- [X] rope_f32x4_pack_kernel (float4 向量化版本)
 - [X] PyTorch bindings
 
+## 0x01 RoPE 工作原理
+
+RoPE (Rotary Position Embedding) 的核心思想是通过旋转变换来编码位置信息：
+
+1. **复数表示**: 将相邻的两个特征维度 (x1, x2) 组成复数 z = x1 + i*x2
+2. **旋转因子**: 计算旋转角度 θ = pos * (1/θ^(2i/d))，其中：
+   - pos: token 在序列中的位置  
+   - i: 特征维度索引
+   - d: 特征总维度
+   - θ: 基础频率 (通常为 10000)
+3. **复数旋转**: z_out = z * e^(i*θ) = z * (cos(θ) + i*sin(θ))
+4. **实数展开**: 
+   - out1 = x1 * cos(θ) - x2 * sin(θ)
+   - out2 = x1 * sin(θ) + x2 * cos(θ)
+
+## 0x02 Kernel 实现分析
+
+### rope_f32_kernel (基础版本)
+
+```cuda
+__global__ void rope_f32_kernel(float *x, float *out, int seq_len, int N) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  float x1 = x[idx * 2];
+  float x2 = x[idx * 2 + 1];
+  int token_pos = idx / N;        // 计算 token 位置
+  int token_idx = idx % N;        // 计算维度索引
+  float exp_v = 1.0f / powf(theta, 2 * token_idx / (N * 2.0f));
+  float sin_v = sinf(token_pos * exp_v);
+  float cos_v = cosf(token_pos * exp_v);
+  float out1 = x1 * cos_v - x2 * sin_v;
+  float out2 = x1 * sin_v + x2 * cos_v;
+  out[idx * 2] = out1;
+  out[idx * 2 + 1] = out2;
+}
+```
+
+**特点**:
+- 线程映射: 每个线程处理一对相邻元素
+- 内存访问: 每线程2次读取、2次写入
+- 计算: 包含三角函数和幂函数计算
+
+### rope_f32_v2_kernel (优化索引版本)
+
+```cuda
+__global__ void rope_f32_v2_kernel(float *x, float *out, int seq_len, int N) {
+  int token_pos = blockIdx.x;     // block 对应 token
+  int tid = threadIdx.x;          // thread 对应维度
+  float x1 = x[token_pos * N * 2 + tid * 2];
+  float x2 = x[token_pos * N * 2 + tid * 2 + 1];
+  // ... 相同的计算逻辑
+}
+```
+
+**优化点**:
+- **更好的线程组织**: 每个 block 处理一个 token，thread 处理维度
+- **内存局部性**: 同一 block 内的线程访问连续内存区域
+- **减少分支**: 避免了除法和取模运算来计算位置
+
+### rope_f32x4_pack_kernel (向量化版本)
+
+```cuda
+__global__ void rope_f32x4_pack_kernel(float *x, float *out, int seq_len, int N) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  float4 x_v = FLOAT4(x[idx * 4]);  // 向量化读取
+  // 计算两对元素的旋转
+  float exp_f_v = 1.0f / powf(theta, 2 * token_idx * 2 / (N * 4.0f));
+  float exp_s_v = 1.0f / powf(theta, 2 * (token_idx * 2 + 1) / (N * 4.0f));
+  // ... 并行计算两个复数的旋转
+  FLOAT4(out[idx * 4]) = out_v;     // 向量化写入
+}
+```
+
+**优化点**:
+- **向量化访存**: 使用 float4 实现 128-bit 对齐访问
+- **并行计算**: 一个线程同时处理两对相邻元素  
+- **内存带宽**: 减少内存访问次数，提高带宽利用率
+
+## 0x03 优化方法总结
+
+### 内存访问优化
+1. **向量化访存**: float4 实现合并访存，提高内存带宽利用率
+2. **内存局部性**: v2 版本通过重新组织线程布局改善缓存命中率
+3. **对齐访问**: 确保内存访问按 128-bit 对齐
+
+### 计算优化  
+1. **减少分支**: v2 版本避免运行时的除法和取模计算
+2. **并行度**: 不同版本在 token 级别和维度级别提供不同的并行策略
+3. **向量化计算**: float4 版本同时处理多个元素
+
+### 线程组织优化
+1. **基础版本**: 线程级别的细粒度并行，适合小规模数据
+2. **v2 版本**: block-token 映射，提供更好的内存访问模式  
+3. **向量化版本**: 平衡计算和访存，适合大规模高维数据
+
+### 性能对比
+从测试结果可以看出：
+- float4 向量化版本性能最佳，相比基础版本提升约 15-20%
+- v2 索引优化版本在某些情况下也有改善
+- 自定义 CUDA kernel 相比 PyTorch 原生实现有显著加速 (约 120-170x)
 
 ## 测试
 
