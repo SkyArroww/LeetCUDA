@@ -110,3 +110,195 @@ python3 softmax.py
          out_f16_th(per): ['0.00012851  ', '0.00010681  ', '6.098e-05   '], time:0.40700197ms
 ----------------------------------------------------------------------------------------------------
 ```
+
+## 0x01 Kernel分析
+
+### 核心工作原理
+
+Softmax函数的数学定义为：
+$$\text{softmax}(x_i) = \frac{e^{x_i}}{\sum_{j=1}^{n} e^{x_j}}$$
+
+本实现针对**per-token**场景进行了优化，即每个thread block处理一个token的所有维度。
+
+### 1. 基础归约函数
+
+#### warp_reduce_sum_f32 / warp_reduce_max_f32
+```cpp
+template <const int kWarpSize = WARP_SIZE>
+__device__ __forceinline__ float warp_reduce_sum_f32(float val)
+```
+
+**工作原理**：
+- 使用`__shfl_xor_sync`进行butterfly归约
+- 在一个warp内（32个线程）完成并行归约
+- 时间复杂度：O(log₂(32)) = O(5)步
+
+**优化特点**：
+- 无需共享内存，直接使用寄存器间通信
+- 避免了memory bank conflicts
+- 最高效的warp内归约方式
+
+#### block_reduce_sum_f32 / block_reduce_max_f32
+```cpp
+template <const int NUM_THREADS = 256>
+__device__ float block_reduce_sum_f32(float val)
+```
+
+**工作原理**：
+1. 每个warp先进行warp内归约
+2. 第0个线程将结果写入共享内存
+3. 第一个warp读取所有warp结果，再次归约
+4. 广播最终结果到block内所有线程
+
+**优化特点**：
+- 两层归约结构：warp级 + block级
+- 最小化共享内存使用（只需NUM_WARPS个元素）
+- 使用`__shfl_sync`进行结果广播
+
+### 2. 基础Softmax Kernel
+
+#### softmax_f32_per_token_kernel
+```cpp
+template <const int NUM_THREADS = 256>
+__global__ void softmax_f32_per_token_kernel(float *x, float *y, int N)
+```
+
+**工作原理**：
+1. 每个线程计算`exp(x[idx])`
+2. 使用block归约计算所有exp值的和
+3. 每个线程计算最终结果`exp_val / exp_sum`
+
+**问题**：
+- 数值不稳定：当输入值很大时，`exp(x)`可能溢出
+- 无向量化优化
+
+### 3. 向量化优化
+
+#### softmax_f32x4_per_token_kernel
+```cpp
+template <const int NUM_THREADS = 256/4>
+__global__ void softmax_f32x4_per_token_kernel(float *x, float *y, int N)
+```
+
+**优化策略**：
+- 使用`float4`一次加载4个元素
+- 每个线程处理4个数据，提高内存带宽利用率
+- 减少线程数量，提高occupancy
+
+**性能提升**：
+- 内存带宽利用率提升约4倍
+- 从测试结果看，性能提升约1.5-2倍
+
+### 4. 数值稳定优化
+
+#### safe_softmax_f32_per_token_kernel
+```cpp
+template <const int NUM_THREADS = 256>
+__global__ void safe_softmax_f32_per_token_kernel(float *x, float *y, int N)
+```
+
+**数值稳定技术**：
+$$\text{softmax}(x_i) = \frac{e^{x_i - \max(x)}}{\sum_{j=1}^{n} e^{x_j - \max(x)}}$$
+
+**工作流程**：
+1. 先用block归约找到最大值`max_val`
+2. 计算`exp(x[idx] - max_val)`
+3. 再次归约计算exp和
+4. 归一化得到最终结果
+
+**优化意义**：
+- 防止数值溢出：减去最大值确保指数项不会过大
+- 保持数值精度：避免小数被大数淹没
+
+### 5. 混合精度优化
+
+#### safe_softmax_f16_f32_per_token_kernel
+```cpp
+template <const int NUM_THREADS = 256>
+__global__ void safe_softmax_f16_f32_per_token_kernel(half *x, half *y, int N)
+```
+
+**混合精度策略**：
+- 输入输出：FP16（节省内存带宽）
+- 中间计算：FP32（保证数值精度）
+- 使用`__half2float`和`__float2half_rn`进行转换
+
+#### safe_softmax_f16x8_pack_f32_per_token_kernel
+```cpp
+template <const int NUM_THREADS = 256>
+__global__ void safe_softmax_f16x8_pack_f32_per_token_kernel(half *x, half *y, int N)
+```
+
+**极致优化**：
+- 使用128位内存事务一次加载8个FP16数据
+- `LDST128BITS(pack_x[0]) = LDST128BITS(x[idx])`实现合并访存
+- 最大化内存带宽利用率
+
+**性能表现**：
+从测试结果看，FP16x8版本是最快的实现，在大尺寸下性能优势明显。
+
+### 6. Online Softmax算法
+
+#### online_safe_softmax_f32_per_token_kernel
+```cpp
+template <const int NUM_THREADS = 256>
+__global__ void online_safe_softmax_f32_per_token_kernel(const float *x, float *y, int N)
+```
+
+**Online算法原理**：
+基于论文["Online normalizer calculation for softmax"](https://arxiv.org/pdf/1805.02867)
+
+**核心思想**：
+- 使用MD结构{m, d}维护running maximum和running sum
+- 一次遍历完成softmax计算，避免多次归约
+
+**MD更新规则**：
+```cpp
+struct MD { float m; float d; };
+// 合并两个MD值
+MD bigger_m = value_bigger ? value : other;
+MD smaller_m = value_bigger ? other : value;
+result.d = bigger_m.d + smaller_m.d * exp(smaller_m.m - bigger_m.m);
+result.m = bigger_m.m;
+```
+
+**算法优势**：
+- 数值稳定：自动维护最大值
+- 内存高效：只需一次遍历
+- 计算高效：减少归约操作
+
+### 7. 性能对比分析
+
+从测试结果可以看出优化效果：
+
+| 优化技术 | 性能提升 | 适用场景 |
+|---------|---------|---------|
+| 向量化(x4) | ~1.5-2x | 中等尺寸 |
+| 混合精度(FP16) | ~1.2-1.5x | 所有尺寸 |
+| 向量化+混合精度(x8) | ~3-8x | 大尺寸 |
+| Online算法 | ~1.2x | 中等尺寸 |
+
+**关键观察**：
+1. **FP16x8_pack**在大尺寸下性能最佳，充分利用了内存带宽
+2. **向量化**在中小尺寸下效果显著
+3. **Online算法**提供稳定的性能提升
+4. **数值稳定**是必需的，性能开销可接受
+
+### 8. 核心优化技术总结
+
+#### 内存优化
+- **合并访存**：使用向量化加载（float4, half2, 128位pack）
+- **内存带宽最大化**：FP16输入减少一半内存传输
+- **共享内存最小化**：归约算法只使用必要的共享内存
+
+#### 计算优化
+- **warp内并行**：充分利用SIMD特性
+- **两层归约**：warp级 + block级的高效归约
+- **数值稳定**：安全的softmax计算避免溢出
+
+#### 算法优化
+- **Online算法**：一次遍历完成计算
+- **混合精度**：FP16存储 + FP32计算的平衡
+- **模板特化**：针对不同尺寸的编译时优化
+
+这些优化技术的组合使得softmax kernel在各种场景下都能达到接近硬件峰值的性能。
