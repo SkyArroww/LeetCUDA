@@ -9,7 +9,7 @@ torch.set_grad_enabled(False)
 # Load the CUDA kernel as a python module
 lib = load(
     name="rms_norm_lib",
-    sources=["rms_norm.cu"],
+    sources=["my_rms_norm.cu"],
     extra_cuda_cflags=[
         "-O3",
         "-U__CUDA_NO_HALF_OPERATORS__",
